@@ -199,6 +199,9 @@ var createCmd = &cobra.Command{
 			if externalRef != "" {
 				externalRefPtr = &externalRef
 			}
+			// Auto-set Ephemeral for internal types (wisp, molecule, agent, gate, convoy)
+			normalizedType := types.IssueType(issueType).Normalize()
+			ephemeral := wisp || normalizedType.IsEphemeralByDefault()
 			previewIssue := &types.Issue{
 				Title:              title,
 				Description:        description,
@@ -208,10 +211,10 @@ var createCmd = &cobra.Command{
 				SpecID:             specID,
 				Status:             types.StatusOpen,
 				Priority:           priority,
-				IssueType:          types.IssueType(issueType).Normalize(),
+				IssueType:          normalizedType,
 				Assignee:           assignee,
 				ExternalRef:        externalRefPtr,
-				Ephemeral:          wisp,
+				Ephemeral:          ephemeral,
 				CreatedBy:          getActorWithGit(),
 				Owner:              getOwner(),
 				MolType:            molType,
@@ -490,6 +493,8 @@ var createCmd = &cobra.Command{
 
 		// If daemon is running, use RPC
 		if daemonClient != nil {
+			// Auto-set Ephemeral for internal types (wisp, molecule, agent, gate, convoy)
+			rpcEphemeral := wisp || types.IssueType(issueType).Normalize().IsEphemeralByDefault()
 			createArgs := &rpc.CreateArgs{
 				ID:                 explicitID,
 				Parent:             parentID,
@@ -508,7 +513,7 @@ var createCmd = &cobra.Command{
 				Dependencies:       deps,
 				WaitsFor:           waitsFor,
 				WaitsForGate:       waitsForGate,
-				Ephemeral:          wisp,
+				Ephemeral:          rpcEphemeral,
 				CreatedBy:          getActorWithGit(),
 				Owner:              getOwner(),
 				MolType:            string(molType),
@@ -555,6 +560,9 @@ var createCmd = &cobra.Command{
 		}
 
 		// Direct mode
+		// Auto-set Ephemeral for internal types (wisp, molecule, agent, gate, convoy)
+		directNormalizedType := types.IssueType(issueType).Normalize()
+		directEphemeral := wisp || directNormalizedType.IsEphemeralByDefault()
 		issue := &types.Issue{
 			ID:                 explicitID, // Set explicit ID if provided (empty string if not)
 			Title:              title,
@@ -565,11 +573,11 @@ var createCmd = &cobra.Command{
 			SpecID:             specID,
 			Status:             types.StatusOpen,
 			Priority:           priority,
-			IssueType:          types.IssueType(issueType).Normalize(),
+			IssueType:          directNormalizedType,
 			Assignee:           assignee,
 			ExternalRef:        externalRefPtr,
 			EstimatedMinutes:   estimatedMinutes,
-			Ephemeral:          wisp,
+			Ephemeral:          directEphemeral,
 			CreatedBy:          getActorWithGit(),
 			Owner:              getOwner(),
 			MolType:            molType,
@@ -1018,6 +1026,9 @@ func createInRig(cmd *cobra.Command, rigName, explicitID, title, description, is
 	}
 
 	// Create issue with explicit ID if provided, otherwise CreateIssue will generate one
+	// Auto-set Ephemeral for internal types (wisp, molecule, agent, gate, convoy)
+	rigNormalizedType := types.IssueType(issueType).Normalize()
+	rigEphemeral := wisp || rigNormalizedType.IsEphemeralByDefault()
 	issue := &types.Issue{
 		ID:                 explicitID, // Set explicit ID if provided (empty string if not)
 		Title:              title,
@@ -1028,10 +1039,10 @@ func createInRig(cmd *cobra.Command, rigName, explicitID, title, description, is
 		SpecID:             specID,
 		Status:             types.StatusOpen,
 		Priority:           priority,
-		IssueType:          types.IssueType(issueType).Normalize(),
+		IssueType:          rigNormalizedType,
 		Assignee:           assignee,
 		ExternalRef:        externalRefPtr,
-		Ephemeral:          wisp,
+		Ephemeral:          rigEphemeral,
 		CreatedBy:          getActorWithGit(),
 		Owner:              getOwner(),
 		// Event fields (bd-xwvo fix)

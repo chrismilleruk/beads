@@ -553,6 +553,24 @@ func (t IssueType) IsValidWithCustom(customTypes []string) bool {
 	return false
 }
 
+// EphemeralByDefaultTypes are internal types that should be marked Ephemeral=true
+// by default when created. These types are excluded from Linear sync and JSONL export.
+// They represent operational infrastructure, not user-facing work items.
+var EphemeralByDefaultTypes = map[IssueType]bool{
+	"wisp":     true, // Ephemeral molecules (bd mol wisp)
+	"molecule": true, // Workflow containers
+	"agent":    true, // Agent beads (polecats, witnesses, etc.)
+	"gate":     true, // Async coordination primitives
+	"convoy":   true, // Cross-project tracking
+}
+
+// IsEphemeralByDefault returns true if this issue type should be marked
+// Ephemeral=true by default. These are internal/operational types that
+// shouldn't be synced to Linear or exported to JSONL.
+func (t IssueType) IsEphemeralByDefault() bool {
+	return EphemeralByDefaultTypes[t]
+}
+
 // Normalize maps issue type aliases to their canonical form.
 // For example, "enhancement" -> "feature".
 // Case-insensitive to match util.NormalizeIssueType behavior.

@@ -297,11 +297,15 @@ func (s *Server) handleCreate(req *Request) Response {
 		}
 	}
 
+	// Auto-set Ephemeral for internal types (wisp, molecule, agent, gate, convoy)
+	issueType := types.IssueType(createArgs.IssueType)
+	ephemeral := createArgs.Ephemeral || issueType.IsEphemeralByDefault()
+
 	issue := &types.Issue{
 		ID:                 issueID,
 		Title:              createArgs.Title,
 		Description:        createArgs.Description,
-		IssueType:          types.IssueType(createArgs.IssueType),
+		IssueType:          issueType,
 		Priority:           createArgs.Priority,
 		Design:             strValue(design),
 		AcceptanceCriteria: strValue(acceptance),
@@ -313,7 +317,7 @@ func (s *Server) handleCreate(req *Request) Response {
 		Status:             types.StatusOpen,
 		// Messaging fields
 		Sender:    createArgs.Sender,
-		Ephemeral: createArgs.Ephemeral,
+		Ephemeral: ephemeral,
 		// NOTE: RepliesTo now handled via replies-to dependency (Decision 004)
 		// ID generation
 		IDPrefix:  createArgs.IDPrefix,
