@@ -157,7 +157,7 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	updateRefs, _ := cmd.Flags().GetBool("update-refs")
 	state, _ := cmd.Flags().GetString("state")
 	typeFilters, _ := cmd.Flags().GetStringSlice("type")
-	excludeTypes, _ := cmd.Flags().GetStringSlice("exclude-type")
+	excludeTypesFlag, _ := cmd.Flags().GetStringSlice("exclude-type")
 	includeEphemeral, _ := cmd.Flags().GetBool("include-ephemeral")
 
 	if !dryRun {
@@ -185,6 +185,19 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	}
 
 	ctx := rootCtx
+
+	// Merge exclude types from config with CLI flags
+	excludeTypes := excludeTypesFlag
+	if configExcludeTypes, _ := store.GetConfig(ctx, "linear.exclude_types"); configExcludeTypes != "" {
+		// Config value is comma-separated
+		for _, t := range strings.Split(configExcludeTypes, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				excludeTypes = append(excludeTypes, t)
+			}
+		}
+	}
+
 	result := &linear.SyncResult{Success: true}
 	var forceUpdateIDs map[string]bool
 	var skipUpdateIDs map[string]bool
