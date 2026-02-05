@@ -1120,6 +1120,74 @@ func TestListTimeBasedFilters(t *testing.T) {
 	})
 }
 
+// TestFormatIDWithExternalRef tests that external refs are shown with -v flag
+func TestFormatIDWithExternalRef(t *testing.T) {
+	// Save and restore verboseFlag state
+	originalVerboseFlag := verboseFlag
+	defer func() { verboseFlag = originalVerboseFlag }()
+
+	tests := []struct {
+		name        string
+		id          string
+		externalRef *string
+		verbose     bool
+		want        string
+	}{
+		{
+			name:        "no external ref",
+			id:          "bd-abc",
+			externalRef: nil,
+			verbose:     true,
+			want:        "bd-abc",
+		},
+		{
+			name:        "empty external ref",
+			id:          "bd-abc",
+			externalRef: strPtr(""),
+			verbose:     true,
+			want:        "bd-abc",
+		},
+		{
+			name:        "linear external ref with verbose",
+			id:          "bd-xyz",
+			externalRef: strPtr("https://linear.app/team/issue/SAI-1491/some-title"),
+			verbose:     true,
+			want:        "bd-xyz (SAI-1491)",
+		},
+		{
+			name:        "linear external ref without verbose",
+			id:          "bd-xyz",
+			externalRef: strPtr("https://linear.app/team/issue/SAI-1491/some-title"),
+			verbose:     false,
+			want:        "bd-xyz",
+		},
+		{
+			name:        "non-linear external ref with verbose",
+			id:          "bd-123",
+			externalRef: strPtr("gh-456"),
+			verbose:     true,
+			want:        "bd-123 (gh-456)",
+		},
+		{
+			name:        "long external ref truncated",
+			id:          "bd-123",
+			externalRef: strPtr("https://some-very-long-url-that-should-be-truncated.example.com/path"),
+			verbose:     true,
+			want:        "bd-123 (https://some-very-long-url...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verboseFlag = tt.verbose
+			result := formatIDWithExternalRef(tt.id, tt.externalRef)
+			if result != tt.want {
+				t.Errorf("formatIDWithExternalRef() = %q, want %q", result, tt.want)
+			}
+		})
+	}
+}
+
 // TestHierarchicalChildren tests the --tree --parent functionality for showing all descendants
 func TestHierarchicalChildren(t *testing.T) {
 	t.Parallel()

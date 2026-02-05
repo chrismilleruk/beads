@@ -18,6 +18,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/linear"
 	"github.com/steveyegge/beads/internal/rpc"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/sqlite"
@@ -147,6 +148,27 @@ func renderStatusIcon(status types.Status) string {
 	return ui.RenderStatusIcon(string(status))
 }
 
+// formatIDWithExternalRef formats an issue ID with optional external ref suffix.
+// When verboseFlag is true and externalRef is set, returns "id (TEAM-123)" for Linear
+// URLs or "id (ext-ref)" for other external refs. Otherwise returns just the id.
+func formatIDWithExternalRef(id string, externalRef *string) string {
+	if !verboseFlag || externalRef == nil || *externalRef == "" {
+		return id
+	}
+	// Try to extract Linear identifier (e.g., "SAI-1491" from Linear URL)
+	if linear.IsLinearExternalRef(*externalRef) {
+		if linearID := linear.ExtractLinearIdentifier(*externalRef); linearID != "" {
+			return fmt.Sprintf("%s (%s)", id, linearID)
+		}
+	}
+	// For other external refs, show as-is (truncated if too long)
+	extRef := *externalRef
+	if len(extRef) > 30 {
+		extRef = extRef[:27] + "..."
+	}
+	return fmt.Sprintf("%s (%s)", id, extRef)
+}
+
 // formatPrettyIssue formats a single issue for pretty output
 // Uses semantic colors: status icon colored, priority P0/P1 colored, rest neutral
 func formatPrettyIssue(issue *types.Issue) string {
@@ -163,19 +185,21 @@ func formatPrettyIssue(issue *types.Issue) string {
 		typeBadge = ui.TypeBugStyle.Render("[bug]") + " "
 	}
 
-	// Format: STATUS_ICON ID PRIORITY [Type] Title
+	// Format: STATUS_ICON ID [EXTERNAL_REF] PRIORITY [Type] Title
 	// Priority uses ● icon with color, no brackets needed
 	// Closed issues: entire line is muted
+	// With -v flag, external ref (e.g., Linear ID) shown after bead ID
+	idDisplay := formatIDWithExternalRef(issue.ID, issue.ExternalRef)
 	if issue.Status == types.StatusClosed {
 		return fmt.Sprintf("%s %s %s %s%s",
 			statusIcon,
-			ui.RenderMuted(issue.ID),
+			ui.RenderMuted(idDisplay),
 			ui.RenderMuted(fmt.Sprintf("● P%d", issue.Priority)),
 			ui.RenderMuted(string(issue.IssueType)),
 			ui.RenderMuted(" "+issue.Title))
 	}
 
-	return fmt.Sprintf("%s %s %s %s%s", statusIcon, issue.ID, priorityTag, typeBadge, issue.Title)
+	return fmt.Sprintf("%s %s %s %s%s", statusIcon, idDisplay, priorityTag, typeBadge, issue.Title)
 }
 
 // buildIssueTree builds parent-child tree structure from issues
@@ -474,16 +498,18 @@ func sortIssues(issues []*types.Issue, sortBy string, reverse bool) {
 // formatIssueLong formats a single issue in long format to a buffer
 func formatIssueLong(buf *strings.Builder, issue *types.Issue, labels []string) {
 	status := string(issue.Status)
+	// Format ID with optional external ref (shown when -v flag is set)
+	idDisplay := formatIDWithExternalRef(issue.ID, issue.ExternalRef)
 	if status == "closed" {
 		line := fmt.Sprintf("%s%s [P%d] [%s] %s\n  %s",
-			pinIndicator(issue), issue.ID, issue.Priority,
+			pinIndicator(issue), idDisplay, issue.Priority,
 			issue.IssueType, status, issue.Title)
 		buf.WriteString(ui.RenderClosedLine(line))
 		buf.WriteString("\n")
 	} else {
 		buf.WriteString(fmt.Sprintf("%s%s [%s] [%s] %s\n",
 			pinIndicator(issue),
-			ui.RenderID(issue.ID),
+			ui.RenderID(idDisplay),
 			ui.RenderPriority(issue.Priority),
 			ui.RenderType(string(issue.IssueType)),
 			ui.RenderStatus(status)))
@@ -577,10 +603,13 @@ func formatIssueCompact(buf *strings.Builder, issue *types.Issue, labels []strin
 	// Get styled status icon
 	statusIcon := renderStatusIcon(issue.Status)
 
+	// Format ID with optional external ref (shown when -v flag is set)
+	idDisplay := formatIDWithExternalRef(issue.ID, issue.ExternalRef)
+
 	if issue.Status == types.StatusClosed {
 		// Closed issues: entire line muted (fades visually)
 		line := fmt.Sprintf("%s %s%s [P%d] [%s]%s%s - %s%s",
-			statusIcon, pinIndicator(issue), issue.ID, issue.Priority,
+			statusIcon, pinIndicator(issue), idDisplay, issue.Priority,
 			issue.IssueType, assigneeStr, labelsStr, issue.Title, depInfo)
 		buf.WriteString(ui.RenderClosedLine(line))
 		buf.WriteString("\n")
@@ -589,7 +618,7 @@ func formatIssueCompact(buf *strings.Builder, issue *types.Issue, labels []strin
 		buf.WriteString(fmt.Sprintf("%s %s%s [%s] [%s]%s%s - %s%s\n",
 			statusIcon,
 			pinIndicator(issue),
-			ui.RenderID(issue.ID),
+			ui.RenderID(idDisplay),
 			ui.RenderPriority(issue.Priority),
 			ui.RenderType(string(issue.IssueType)),
 			assigneeStr, labelsStr, issue.Title, depInfo))

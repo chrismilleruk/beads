@@ -173,10 +173,12 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			} else {
 				fmt.Printf("\n%s Ready work (%d issues with no blockers):\n\n", ui.RenderAccent("📋"), len(issues))
 				for i, issue := range issues {
+					// Format ID with optional external ref (shown when -v flag is set)
+					idDisplay := formatIDWithExternalRef(issue.ID, issue.ExternalRef)
 					fmt.Printf("%d. [%s] [%s] %s: %s\n", i+1,
 						ui.RenderPriority(issue.Priority),
 						ui.RenderType(string(issue.IssueType)),
-						ui.RenderID(issue.ID), issue.Title)
+						ui.RenderID(idDisplay), issue.Title)
 					if issue.EstimatedMinutes != nil {
 						fmt.Printf("   Estimate: %d min\n", *issue.EstimatedMinutes)
 					}
@@ -253,10 +255,12 @@ This is useful for agents executing molecules to see which steps can run next.`,
 		} else {
 			fmt.Printf("\n%s Ready work (%d issues with no blockers):\n\n", ui.RenderAccent("📋"), len(issues))
 			for i, issue := range issues {
+				// Format ID with optional external ref (shown when -v flag is set)
+				idDisplay := formatIDWithExternalRef(issue.ID, issue.ExternalRef)
 				fmt.Printf("%d. [%s] [%s] %s: %s\n", i+1,
 					ui.RenderPriority(issue.Priority),
 					ui.RenderType(string(issue.IssueType)),
-					ui.RenderID(issue.ID), issue.Title)
+					ui.RenderID(idDisplay), issue.Title)
 				if issue.EstimatedMinutes != nil {
 					fmt.Printf("   Estimate: %d min\n", *issue.EstimatedMinutes)
 				}
