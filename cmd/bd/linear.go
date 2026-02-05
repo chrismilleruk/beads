@@ -92,12 +92,18 @@ Conflict Resolution:
   --prefer-local    Always prefer local beads version
   --prefer-linear   Always prefer Linear version
 
+Orphaned links (deleted in Linear):
+  If a bead's external_ref points to a Linear issue that was deleted, push will warn
+  and print a summary. Use --fix to clear external_ref and close those beads so they
+  do not sync again (closed beads are never created in Linear).
+
 Examples:
   bd linear sync --pull                         # Import from Linear
   bd linear sync --push --create-only           # Push new issues only
   bd linear sync --push --type=task,feature     # Push only tasks and features
   bd linear sync --push --exclude-type=wisp     # Push all except wisps
   bd linear sync --dry-run                      # Preview without changes
+  bd linear sync --push --fix                   # Push and fix beads pointing to deleted Linear issues
   bd linear sync --prefer-local                 # Bidirectional, local wins`,
 	Run: runLinearSync,
 }
@@ -140,6 +146,7 @@ func init() {
 	linearSyncCmd.Flags().StringSlice("type", nil, "Only sync issues of these types (can be repeated)")
 	linearSyncCmd.Flags().StringSlice("exclude-type", nil, "Exclude issues of these types (can be repeated)")
 	linearSyncCmd.Flags().Bool("include-ephemeral", false, "Include ephemeral issues (wisps, etc.) when pushing to Linear")
+	linearSyncCmd.Flags().Bool("fix", false, "Apply fixes: clear external_ref and close beads whose Linear issue was deleted (they will not sync again)")
 
 	linearCmd.AddCommand(linearSyncCmd)
 	linearCmd.AddCommand(linearStatusCmd)
@@ -159,6 +166,7 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 	typeFilters, _ := cmd.Flags().GetStringSlice("type")
 	excludeTypesFlag, _ := cmd.Flags().GetStringSlice("exclude-type")
 	includeEphemeral, _ := cmd.Flags().GetBool("include-ephemeral")
+	fix, _ := cmd.Flags().GetBool("fix")
 
 	if !dryRun {
 		CheckReadonly("linear sync")
@@ -233,7 +241,7 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 			fmt.Println("→ Pulling issues from Linear...")
 		}
 
-		pullStats, err := doPullFromLinear(ctx, dryRun, state, prePullSkipLinearIDs)
+		pullStats, err := doPullFromLinear(ctx, dryRun, state, prePullSkipLinearIDs, excludeTypes)
 		if err != nil {
 			result.Success = false
 			result.Error = err.Error()
@@ -340,7 +348,7 @@ func runLinearSync(cmd *cobra.Command, args []string) {
 			fmt.Println("→ Pushing issues to Linear...")
 		}
 
-		pushStats, err := doPushToLinear(ctx, dryRun, createOnly, updateRefs, forceUpdateIDs, skipUpdateIDs, typeFilters, excludeTypes, includeEphemeral)
+		pushStats, err := doPushToLinear(ctx, dryRun, createOnly, updateRefs, forceUpdateIDs, skipUpdateIDs, typeFilters, excludeTypes, includeEphemeral, fix)
 		if err != nil {
 			result.Success = false
 			result.Error = err.Error()

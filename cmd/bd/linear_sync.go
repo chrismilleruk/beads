@@ -14,7 +14,9 @@ import (
 // doPullFromLinear imports issues from Linear using the GraphQL API.
 // Supports incremental sync by checking linear.last_sync config and only fetching
 // issues updated since that timestamp.
-func doPullFromLinear(ctx context.Context, dryRun bool, state string, skipLinearIDs map[string]bool) (*linear.PullStats, error) {
+// Skips Linear issues with state type "canceled" (treated as deleted).
+// excludeTypes filters out issues whose beads IssueType matches (from linear.exclude_types or --exclude-type).
+func doPullFromLinear(ctx context.Context, dryRun bool, state string, skipLinearIDs map[string]bool, excludeTypes []string) (*linear.PullStats, error) {
 	stats := &linear.PullStats{}
 
 	client, err := getLinearClient(ctx)
@@ -62,9 +64,20 @@ func doPullFromLinear(ctx context.Context, dryRun bool, state string, skipLinear
 	var beadsIssues []*types.Issue
 	var allDeps []linear.DependencyInfo
 	linearIDToBeadsID := make(map[string]string)
+	var canceledLinearIDs []string
 
 	for i := range linearIssues {
-		conversion := linear.IssueToBeads(&linearIssues[i], mappingConfig)
+		li := &linearIssues[i]
+		// Skip canceled issues (treated as deleted in Linear)
+		if li.State != nil {
+			t := strings.ToLower(strings.TrimSpace(li.State.Type))
+			if t == "canceled" || t == "cancelled" {
+				stats.Skipped++
+				canceledLinearIDs = append(canceledLinearIDs, li.Identifier)
+				continue
+			}
+		}
+		conversion := linear.IssueToBeads(li, mappingConfig)
 		beadsIssues = append(beadsIssues, conversion.Issue.(*types.Issue))
 		allDeps = append(allDeps, conversion.Dependencies...)
 	}
@@ -98,6 +111,40 @@ func doPullFromLinear(ctx context.Context, dryRun bool, state string, skipLinear
 			var filteredDeps []linear.DependencyInfo
 			for _, dep := range allDeps {
 				if skipLinearIDs[dep.FromLinearID] || skipLinearIDs[dep.ToLinearID] {
+					continue
+				}
+				filteredDeps = append(filteredDeps, dep)
+			}
+			allDeps = filteredDeps
+		}
+	}
+
+	// Filter by exclude types (linear.exclude_types or --exclude-type)
+	if len(excludeTypes) > 0 {
+		excludeSet := make(map[string]bool, len(excludeTypes))
+		for _, t := range excludeTypes {
+			excludeSet[strings.ToLower(t)] = true
+		}
+		var filteredIssues []*types.Issue
+		excludedLinearIDs := make(map[string]bool)
+		for _, issue := range beadsIssues {
+			issueType := strings.ToLower(string(issue.IssueType))
+			if excludeSet[issueType] {
+				stats.Skipped++
+				if issue.ExternalRef != nil {
+					if id := linear.ExtractLinearIdentifier(*issue.ExternalRef); id != "" {
+						excludedLinearIDs[id] = true
+					}
+				}
+				continue
+			}
+			filteredIssues = append(filteredIssues, issue)
+		}
+		beadsIssues = filteredIssues
+		if len(allDeps) > 0 && len(excludedLinearIDs) > 0 {
+			var filteredDeps []linear.DependencyInfo
+			for _, dep := range allDeps {
+				if excludedLinearIDs[dep.FromLinearID] || excludedLinearIDs[dep.ToLinearID] {
 					continue
 				}
 				filteredDeps = append(filteredDeps, dep)
@@ -152,9 +199,49 @@ func doPullFromLinear(ctx context.Context, dryRun bool, state string, skipLinear
 	if dryRun {
 		if stats.Incremental {
 			fmt.Printf("  Would import %d issues from Linear (incremental since %s)\n",
-				len(linearIssues), stats.SyncedSince)
+				len(beadsIssues), stats.SyncedSince)
 		} else {
-			fmt.Printf("  Would import %d issues from Linear (full sync)\n", len(linearIssues))
+			fmt.Printf("  Would import %d issues from Linear (full sync)\n", len(beadsIssues))
+		}
+		if verboseFlag {
+			for _, issue := range beadsIssues {
+				linearID := ""
+				if issue.ExternalRef != nil {
+					linearID = linear.ExtractLinearIdentifier(*issue.ExternalRef)
+				}
+				if linearID != "" {
+					fmt.Printf("    %s\n", linearID)
+				} else {
+					fmt.Printf("    %s (no Linear ref)\n", issue.ID)
+				}
+			}
+		}
+		if len(canceledLinearIDs) > 0 {
+			allIssues, err := store.SearchIssues(ctx, "", types.IssueFilter{})
+			if err == nil {
+				canceledSet := make(map[string]bool, len(canceledLinearIDs))
+				for _, id := range canceledLinearIDs {
+					canceledSet[id] = true
+				}
+				var wouldClose []string
+				for _, issue := range allIssues {
+					if issue.ExternalRef == nil || !linear.IsLinearExternalRef(*issue.ExternalRef) || issue.Status == types.StatusClosed {
+						continue
+					}
+					linearID := linear.ExtractLinearIdentifier(*issue.ExternalRef)
+					if linearID != "" && canceledSet[linearID] {
+						wouldClose = append(wouldClose, fmt.Sprintf("%s -> %s", issue.ID, linearID))
+					}
+				}
+				if len(wouldClose) > 0 {
+					fmt.Printf("  Would close %d local beads (Linear issues canceled)\n", len(wouldClose))
+					if verboseFlag {
+						for _, s := range wouldClose {
+							fmt.Printf("    %s\n", s)
+						}
+					}
+				}
+			}
 		}
 		return stats, nil
 	}
@@ -205,14 +292,60 @@ func doPullFromLinear(ctx context.Context, dryRun bool, state string, skipLinear
 		fmt.Printf("  Created %d dependencies from Linear relations\n", depsCreated)
 	}
 
+	// Close local beads linked to Linear issues that were canceled
+	if len(canceledLinearIDs) > 0 {
+		canceledSet := make(map[string]bool, len(canceledLinearIDs))
+		for _, id := range canceledLinearIDs {
+			canceledSet[id] = true
+		}
+		closedCount := 0
+		for _, issue := range allBeadsIssues {
+			if issue.ExternalRef == nil || !linear.IsLinearExternalRef(*issue.ExternalRef) || issue.Status == types.StatusClosed {
+				continue
+			}
+			linearID := linear.ExtractLinearIdentifier(*issue.ExternalRef)
+			if linearID == "" || !canceledSet[linearID] {
+				continue
+			}
+			now := time.Now()
+			updates := map[string]interface{}{
+				"status":   "closed",
+				"closed_at": now,
+			}
+			if err := store.UpdateIssue(ctx, issue.ID, updates, actor); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to close bead %s (Linear %s canceled): %v\n", issue.ID, linearID, err)
+			} else {
+				closedCount++
+			}
+		}
+		if closedCount > 0 {
+			fmt.Printf("  Closed %d local beads (Linear issues canceled)\n", closedCount)
+		}
+	}
+
 	return stats, nil
 }
 
-// doPushToLinear exports issues to Linear using the GraphQL API.
-// typeFilters includes only issues matching these types (empty means all).
-// excludeTypes excludes issues matching these types.
-// includeEphemeral: if false (default), ephemeral issues (wisps, etc.) are excluded from push.
-func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRefs bool, forceUpdateIDs map[string]bool, skipUpdateIDs map[string]bool, typeFilters []string, excludeTypes []string, includeEphemeral bool) (*linear.PushStats, error) {
+// doPushToLinear exports issues from beads to Linear using the GraphQL API.
+//
+// Push behavior:
+//   - Beads with no external_ref are created in Linear (unless status is closed).
+//   - Beads with a Linear external_ref are updated in Linear when local is newer.
+//   - Closed beads are never created in Linear; this avoids re-creating issues after --fix
+//     unlinks beads whose Linear issue was deleted.
+//
+// Deleted Linear issues: If a bead's external_ref points to a Linear issue that no longer
+// exists (deleted in Linear), we warn and collect the bead ID. A summary is always printed
+// when any such beads exist. With --fix (and not dry run), we clear external_ref and set
+// status=closed for those beads so they do not sync again.
+//
+// Parameters:
+//   - typeFilters: only push issues whose type is in this list (empty = all).
+//   - excludeTypes: do not push issues whose type is in this list.
+//   - includeEphemeral: if false (default), ephemeral/wisp/digest issues are excluded.
+//   - fix: when true and not dry run, clear external_ref and close beads that point to
+//     deleted Linear issues so they will not sync again.
+func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRefs bool, forceUpdateIDs map[string]bool, skipUpdateIDs map[string]bool, typeFilters []string, excludeTypes []string, includeEphemeral bool, fix bool) (*linear.PushStats, error) {
 	stats := &linear.PushStats{}
 
 	client, err := getLinearClient(ctx)
@@ -264,13 +397,28 @@ func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRef
 		if issue.IsTombstone() {
 			continue
 		}
+		// Exclude ephemeral/wisp/digest issues when includeEphemeral is false (belt-and-suspenders:
+		// catches wisps and digest summaries even if DB ephemeral flag was not set)
+		if !includeEphemeral {
+			if issue.Ephemeral || issue.IssueType.IsEphemeralByDefault() || strings.Contains(issue.ID, "-wisp-") {
+				continue
+			}
+			// Digest issues (mol squash summaries) and "Digest: ..." titles are ephemeral output
+			if strings.ToLower(string(issue.IssueType)) == "digest" || strings.HasPrefix(issue.Title, "Digest: ") {
+				continue
+			}
+		}
 
 		if issue.ExternalRef != nil && linear.IsLinearExternalRef(*issue.ExternalRef) {
 			if !createOnly {
 				toUpdate = append(toUpdate, issue)
 			}
 		} else if issue.ExternalRef == nil {
-			toCreate = append(toCreate, issue)
+			// Never create new Linear issues for closed beads (avoids re-pushing after --fix
+			// clears ref and closes beads whose Linear issue was deleted).
+			if issue.Status != types.StatusClosed {
+				toCreate = append(toCreate, issue)
+			}
 		}
 	}
 
@@ -320,6 +468,10 @@ func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRef
 		}
 	}
 
+	var wouldUpdateIDs []string
+	// Beads whose external_ref points to a Linear issue that no longer exists (deleted).
+	// We warn per-issue, then print a summary and optionally apply --fix (clear ref + close).
+	var deletedLinearRefBeadIDs []string
 	if len(toUpdate) > 0 && !createOnly {
 		for _, issue := range toUpdate {
 			if skipUpdateIDs != nil && skipUpdateIDs[issue.ID] {
@@ -343,8 +495,10 @@ func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRef
 				continue
 			}
 			if linearIssue == nil {
+				// Linear issue was deleted; record so we can print summary and optionally --fix.
 				fmt.Fprintf(os.Stderr, "Warning: Linear issue %s not found (may have been deleted)\n",
 					linearIdentifier)
+				deletedLinearRefBeadIDs = append(deletedLinearRefBeadIDs, issue.ID)
 				stats.Skipped++
 				continue
 			}
@@ -374,6 +528,7 @@ func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRef
 
 			if dryRun {
 				stats.Updated++
+				wouldUpdateIDs = append(wouldUpdateIDs, fmt.Sprintf("%s -> %s", issue.ID, linearIdentifier))
 				continue
 			}
 
@@ -409,8 +564,52 @@ func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRef
 
 	if dryRun {
 		fmt.Printf("  Would create %d issues in Linear\n", stats.Created)
+		if verboseFlag {
+			for _, issue := range toCreate {
+				fmt.Printf("    %s\n", issue.ID)
+			}
+		}
 		if !createOnly {
 			fmt.Printf("  Would update %d issues in Linear\n", stats.Updated)
+			if verboseFlag {
+				for _, s := range wouldUpdateIDs {
+					fmt.Printf("    %s\n", s)
+				}
+			}
+		}
+	}
+
+	// Deleted-ref summary: print whenever we hit any "Linear issue not found" warnings,
+	// so the user always sees the hint to use --fix (dry run or not).
+	if len(deletedLinearRefBeadIDs) > 0 {
+		fmt.Printf("  %d beads point to deleted Linear issues; use --fix to clear external_ref and close them so they do not sync again:\n", len(deletedLinearRefBeadIDs))
+		if verboseFlag {
+			for _, id := range deletedLinearRefBeadIDs {
+				fmt.Printf("    %s\n", id)
+			}
+		}
+	}
+
+	// Apply --fix: clear external_ref and close beads that pointed to deleted Linear issues.
+	// Only when fix is true and not dry run. Closing prevents them from being re-pushed
+	// (closed beads are excluded from the "to create" list).
+	if !dryRun && fix && len(deletedLinearRefBeadIDs) > 0 {
+		cleared := 0
+		now := time.Now()
+		for _, id := range deletedLinearRefBeadIDs {
+			updates := map[string]interface{}{
+				"external_ref": nil,
+				"status":       string(types.StatusClosed),
+				"closed_at":    now,
+			}
+			if err := store.UpdateIssue(ctx, id, updates, actor); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to fix bead %s (clear ref + close): %v\n", id, err)
+			} else {
+				cleared++
+			}
+		}
+		if cleared > 0 {
+			fmt.Printf("  Cleared external_ref and closed %d beads (Linear issues deleted; they will not sync again)\n", cleared)
 		}
 	}
 

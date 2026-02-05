@@ -1220,7 +1220,7 @@ func TestDoPushToLinearPreferLocalForcesUpdate(t *testing.T) {
 	})
 
 	forceUpdateIDs := map[string]bool{issue.ID: true}
-	stats, err := doPushToLinear(ctx, false, false, true, forceUpdateIDs, nil, nil, nil, false)
+	stats, err := doPushToLinear(ctx, false, false, true, forceUpdateIDs, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("doPushToLinear failed: %v", err)
 	}
@@ -1284,7 +1284,7 @@ func TestDoPushToLinearIncludeEphemeralFlag(t *testing.T) {
 	})
 
 	// Default (includeEphemeral=false): only non-ephemeral issues are pushed
-	statsExclude, err := doPushToLinear(ctx, true, false, false, nil, nil, nil, nil, false)
+	statsExclude, err := doPushToLinear(ctx, true, false, false, nil, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("doPushToLinear includeEphemeral=false failed: %v", err)
 	}
@@ -1293,12 +1293,266 @@ func TestDoPushToLinearIncludeEphemeralFlag(t *testing.T) {
 	}
 
 	// includeEphemeral=true: both issues are pushed
-	statsInclude, err := doPushToLinear(ctx, true, false, false, nil, nil, nil, nil, true)
+	statsInclude, err := doPushToLinear(ctx, true, false, false, nil, nil, nil, nil, true, false)
 	if err != nil {
 		t.Fatalf("doPushToLinear includeEphemeral=true failed: %v", err)
 	}
 	if statsInclude.Created != 2 {
 		t.Errorf("includeEphemeral=true: expected Created=2 (persistent + ephemeral), got %d", statsInclude.Created)
+	}
+}
+
+// TestDoPushToLinearClosedBeadsNotCreated ensures closed beads with no external_ref
+// are never added to the "to create" list, so they are not pushed to Linear (e.g. after
+// --fix has cleared ref and closed beads whose Linear issue was deleted).
+func TestDoPushToLinearClosedBeadsNotCreated(t *testing.T) {
+	testStore, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := testStore.SetConfig(ctx, "linear.api_key", "test-api-key"); err != nil {
+		t.Fatalf("SetConfig linear.api_key failed: %v", err)
+	}
+	if err := testStore.SetConfig(ctx, "linear.team_id", "12345678-1234-1234-1234-123456789abc"); err != nil {
+		t.Fatalf("SetConfig linear.team_id failed: %v", err)
+	}
+
+	now := time.Now()
+	closedIssue := &types.Issue{
+		Title:      "Closed local-only issue",
+		Priority:   2,
+		IssueType:  types.TypeTask,
+		Status:     types.StatusClosed,
+		ClosedAt:   &now,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := testStore.CreateIssue(ctx, closedIssue, "test-actor"); err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	origStore := store
+	origActor := actor
+	store = testStore
+	actor = "test-actor"
+	t.Cleanup(func() {
+		store = origStore
+		actor = origActor
+	})
+
+	stats, err := doPushToLinear(ctx, true, false, false, nil, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("doPushToLinear failed: %v", err)
+	}
+	if stats.Created != 0 {
+		t.Errorf("expected Created=0 (closed beads are not created in Linear), got %d", stats.Created)
+	}
+}
+
+// TestDoPushToLinearDeletedRefWithFix verifies that when a bead's external_ref points
+// to a Linear issue that no longer exists, running with --fix clears external_ref and
+// closes the bead so it will not sync again.
+func TestDoPushToLinearDeletedRefWithFix(t *testing.T) {
+	testStore, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := testStore.SetConfig(ctx, "linear.api_key", "test-api-key"); err != nil {
+		t.Fatalf("SetConfig linear.api_key failed: %v", err)
+	}
+	if err := testStore.SetConfig(ctx, "linear.team_id", "12345678-1234-1234-1234-123456789abc"); err != nil {
+		t.Fatalf("SetConfig linear.team_id failed: %v", err)
+	}
+
+	now := time.Now()
+	extRef := "https://linear.app/team/issue/SAI-999/deleted-issue"
+	issue := &types.Issue{
+		Title:       "Bead pointing to deleted Linear issue",
+		Priority:    2,
+		IssueType:   types.TypeTask,
+		Status:      types.StatusOpen,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		ExternalRef: &extRef,
+	}
+	if err := testStore.CreateIssue(ctx, issue, "test-actor"); err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+		_ = r.Body.Close()
+
+		var gqlReq linear.GraphQLRequest
+		if err := json.Unmarshal(body, &gqlReq); err != nil {
+			return nil, fmt.Errorf("decode request body: %w", err)
+		}
+
+		var resp struct {
+			Data   json.RawMessage `json:"data"`
+			Errors []interface{}   `json:"errors,omitempty"`
+		}
+		switch {
+		case strings.Contains(gqlReq.Query, "TeamStates"):
+			resp.Data = json.RawMessage(`{
+				"team": {
+					"id": "team-123",
+					"states": {
+						"nodes": [
+							{"id": "state-started", "name": "In Progress", "type": "started"}
+						]
+					}
+				}
+			}`)
+		case strings.Contains(gqlReq.Query, "IssueByIdentifier"):
+			// Simulate deleted issue: no nodes
+			resp.Data = json.RawMessage(`{"issues": {"nodes": []}}`)
+		default:
+			return nil, fmt.Errorf("unexpected query: %s", gqlReq.Query)
+		}
+
+		respBytes, err := json.Marshal(resp)
+		if err != nil {
+			return nil, fmt.Errorf("encode response: %w", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(respBytes)),
+			Request:    r,
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+
+	origStore := store
+	origActor := actor
+	store = testStore
+	actor = "test-actor"
+	t.Cleanup(func() {
+		store = origStore
+		actor = origActor
+	})
+
+	_, err := doPushToLinear(ctx, false, false, true, nil, nil, nil, nil, false, true)
+	if err != nil {
+		t.Fatalf("doPushToLinear failed: %v", err)
+	}
+
+	got, err := testStore.GetIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue failed: %v", err)
+	}
+	if got.ExternalRef != nil {
+		t.Errorf("after --fix: expected external_ref to be cleared, got %q", *got.ExternalRef)
+	}
+	if got.Status != types.StatusClosed {
+		t.Errorf("after --fix: expected status closed, got %q", got.Status)
+	}
+	if got.ClosedAt == nil {
+		t.Error("after --fix: expected closed_at to be set")
+	}
+}
+
+// TestDoPushToLinearDeletedRefWithoutFix verifies that without --fix, beads pointing
+// to deleted Linear issues are left unchanged (we only warn and print the summary).
+func TestDoPushToLinearDeletedRefWithoutFix(t *testing.T) {
+	testStore, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := testStore.SetConfig(ctx, "linear.api_key", "test-api-key"); err != nil {
+		t.Fatalf("SetConfig linear.api_key failed: %v", err)
+	}
+	if err := testStore.SetConfig(ctx, "linear.team_id", "12345678-1234-1234-1234-123456789abc"); err != nil {
+		t.Fatalf("SetConfig linear.team_id failed: %v", err)
+	}
+
+	now := time.Now()
+	extRef := "https://linear.app/team/issue/SAI-888/orphan"
+	issue := &types.Issue{
+		Title:       "Bead pointing to deleted Linear issue",
+		Priority:    2,
+		IssueType:   types.TypeTask,
+		Status:      types.StatusOpen,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		ExternalRef: &extRef,
+	}
+	if err := testStore.CreateIssue(ctx, issue, "test-actor"); err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+		_ = r.Body.Close()
+
+		var gqlReq linear.GraphQLRequest
+		if err := json.Unmarshal(body, &gqlReq); err != nil {
+			return nil, fmt.Errorf("decode request body: %w", err)
+		}
+
+		var resp struct {
+			Data   json.RawMessage `json:"data"`
+			Errors []interface{}   `json:"errors,omitempty"`
+		}
+		switch {
+		case strings.Contains(gqlReq.Query, "TeamStates"):
+			resp.Data = json.RawMessage(`{
+				"team": {
+					"id": "team-123",
+					"states": { "nodes": [{"id": "state-started", "name": "In Progress", "type": "started"}] }
+				}
+			}`)
+		case strings.Contains(gqlReq.Query, "IssueByIdentifier"):
+			resp.Data = json.RawMessage(`{"issues": {"nodes": []}}`)
+		default:
+			return nil, fmt.Errorf("unexpected query: %s", gqlReq.Query)
+		}
+
+		respBytes, err := json.Marshal(resp)
+		if err != nil {
+			return nil, fmt.Errorf("encode response: %w", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(respBytes)),
+			Request:    r,
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+
+	origStore := store
+	origActor := actor
+	store = testStore
+	actor = "test-actor"
+	t.Cleanup(func() {
+		store = origStore
+		actor = origActor
+	})
+
+	_, err := doPushToLinear(ctx, false, false, true, nil, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("doPushToLinear failed: %v", err)
+	}
+
+	got, err := testStore.GetIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue failed: %v", err)
+	}
+	if got.ExternalRef == nil || *got.ExternalRef != extRef {
+		t.Errorf("without --fix: expected external_ref unchanged %q, got %v", extRef, got.ExternalRef)
+	}
+	if got.Status != types.StatusOpen {
+		t.Errorf("without --fix: expected status open, got %q", got.Status)
 	}
 }
 
