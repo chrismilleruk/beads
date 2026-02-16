@@ -324,7 +324,7 @@ func setupTestRepo(t *testing.T) string {
 	}
 
 	// Initialize git repo
-	runGit(t, tmpDir, "init")
+	runGit(t, tmpDir, "init", "-b", "main")
 	runGit(t, tmpDir, "config", "user.email", "test@test.com")
 	runGit(t, tmpDir, "config", "user.name", "Test User")
 

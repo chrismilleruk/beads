@@ -174,7 +174,7 @@ func TestCheckForcePush_WithGitRepo(t *testing.T) {
 		runGit(t, repoDir, "add", ".")
 		runGit(t, repoDir, "commit", "-m", "initial")
 		runGit(t, repoDir, "remote", "add", "origin", remoteDir)
-		runGit(t, repoDir, "push", "-u", "origin", "master")
+		runGit(t, repoDir, "push", "-u", "origin", "main")
 
 		// Store a fake SHA
 		store := newTestStore(t)
