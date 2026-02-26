@@ -1627,3 +1627,114 @@ func TestComputeContentHashWithValidations(t *testing.T) {
 		t.Error("Expected different hash when Score is added")
 	}
 }
+
+func TestIsEphemeralByDefault(t *testing.T) {
+	tests := []struct {
+		issueType IssueType
+		want      bool
+	}{
+		{"wisp", true},
+		{"molecule", true},
+		{"agent", true},
+		{"gate", true},
+		{"convoy", true},
+		{"task", false},
+		{"bug", false},
+		{"feature", false},
+		{"", false},
+		// Case-insensitive (bd-9hx)
+		{"Wisp", true},
+		{"MOLECULE", true},
+		{"Agent", true},
+		{"GATE", true},
+		{"Convoy", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.issueType), func(t *testing.T) {
+			got := tt.issueType.IsEphemeralByDefault()
+			if got != tt.want {
+				t.Errorf("IssueType(%q).IsEphemeralByDefault() = %v, want %v", tt.issueType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsEffectivelyEphemeral(t *testing.T) {
+	tests := []struct {
+		name  string
+		issue Issue
+		want  bool
+	}{
+		{
+			name:  "explicit ephemeral flag",
+			issue: Issue{ID: "bd-abc", IssueType: "task", Ephemeral: true},
+			want:  true,
+		},
+		{
+			name:  "wisp type without flag",
+			issue: Issue{ID: "bd-abc", IssueType: "wisp", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "molecule type without flag",
+			issue: Issue{ID: "bd-abc", IssueType: "molecule", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "agent type without flag",
+			issue: Issue{ID: "bd-abc", IssueType: "agent", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "gate type without flag",
+			issue: Issue{ID: "bd-abc", IssueType: "gate", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "convoy type without flag",
+			issue: Issue{ID: "bd-abc", IssueType: "convoy", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "wisp ID pattern without flag or type",
+			issue: Issue{ID: "bd-wisp-abc123", IssueType: "task", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "regular task issue",
+			issue: Issue{ID: "bd-abc", IssueType: "task", Ephemeral: false},
+			want:  false,
+		},
+		{
+			name:  "regular bug issue",
+			issue: Issue{ID: "bd-xyz", IssueType: "bug", Ephemeral: false},
+			want:  false,
+		},
+		{
+			name:  "case-insensitive type",
+			issue: Issue{ID: "bd-abc", IssueType: "Wisp", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "old eph prefix not caught by ID but caught by type",
+			issue: Issue{ID: "bd-eph-abc", IssueType: "wisp", Ephemeral: false},
+			want:  true,
+		},
+		{
+			name:  "no type no flag no pattern",
+			issue: Issue{ID: "bd-abc", IssueType: "", Ephemeral: false},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.issue.IsEffectivelyEphemeral()
+			if got != tt.want {
+				t.Errorf("Issue{ID: %q, IssueType: %q, Ephemeral: %v}.IsEffectivelyEphemeral() = %v, want %v",
+					tt.issue.ID, tt.issue.IssueType, tt.issue.Ephemeral, got, tt.want)
+			}
+		})
+	}
+}

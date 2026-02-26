@@ -256,12 +256,13 @@ func exportToJSONLDeferred(ctx context.Context, jsonlPath string) (*ExportResult
 		}
 	}
 
-	// Filter out wisps - they should never be exported to JSONL
+	// Filter out ephemeral issues - they should never be exported to JSONL
 	// Wisps exist only in SQLite and are shared via .beads/redirect, not JSONL.
 	// This prevents "zombie" issues that resurrect after mol squash deletes them.
+	// Uses IsEffectivelyEphemeral() to catch wisps even if the Ephemeral flag was not set (bd-9hx).
 	filteredIssues := make([]*types.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if issue.Ephemeral {
+		if issue.IsEffectivelyEphemeral() {
 			continue
 		}
 		filteredIssues = append(filteredIssues, issue)
@@ -540,8 +541,8 @@ func performIncrementalExport(ctx context.Context, jsonlPath string, dirtyIDs []
 	}
 
 	for _, issue := range dirtyIssues {
-		// Skip wisps - they should never be exported
-		if issue.Ephemeral {
+		// Skip ephemeral issues - they should never be exported (bd-9hx)
+		if issue.IsEffectivelyEphemeral() {
 			continue
 		}
 
@@ -565,8 +566,8 @@ func performIncrementalExport(ctx context.Context, jsonlPath string, dirtyIDs []
 			// Issue was fully deleted (not even a tombstone)
 			delete(issueMap, id)
 		} else if issue.Status == types.StatusTombstone {
-			// Issue is a tombstone - keep it in export for propagation
-			if !issue.Ephemeral {
+			// Issue is a tombstone - keep it in export for propagation (skip ephemeral, bd-9hx)
+			if !issue.IsEffectivelyEphemeral() {
 				data, err := json.Marshal(issue)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal tombstone %s: %w", id, err)

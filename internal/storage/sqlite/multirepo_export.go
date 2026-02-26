@@ -50,11 +50,12 @@ func (s *SQLiteStorage) ExportToMultiRepo(ctx context.Context) (map[string]int, 
 		issue.Labels = labels
 	}
 
-	// Filter out wisps - they should never be exported to JSONL (bd-687g)
+	// Filter out ephemeral issues - they should never be exported to JSONL (bd-687g, bd-9hx)
 	// Wisps exist only in SQLite and are shared via .beads/redirect, not JSONL.
+	// Uses IsEffectivelyEphemeral() to catch wisps even if the Ephemeral flag was not set.
 	filtered := make([]*types.Issue, 0, len(allIssues))
 	for _, issue := range allIssues {
-		if !issue.Ephemeral {
+		if !issue.IsEffectivelyEphemeral() {
 			filtered = append(filtered, issue)
 		}
 	}

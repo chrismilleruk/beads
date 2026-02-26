@@ -400,7 +400,7 @@ func doPushToLinear(ctx context.Context, dryRun bool, createOnly bool, updateRef
 		// Exclude ephemeral/wisp/digest issues when includeEphemeral is false (belt-and-suspenders:
 		// catches wisps and digest summaries even if DB ephemeral flag was not set)
 		if !includeEphemeral {
-			if issue.Ephemeral || issue.IssueType.IsEphemeralByDefault() || strings.Contains(issue.ID, "-wisp-") {
+			if issue.IsEffectivelyEphemeral() {
 				continue
 			}
 			// Digest issues (mol squash summaries) and "Digest: ..." titles are ephemeral output

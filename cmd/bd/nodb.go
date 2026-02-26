@@ -218,11 +218,12 @@ func writeIssuesToJSONL(memStore *memory.MemoryStorage, beadsDir string) error {
 	// Get all issues from memory storage
 	issues := memStore.GetAllIssues()
 
-	// Filter out wisps - they should never be exported to JSONL
+	// Filter out ephemeral issues - they should never be exported to JSONL (bd-9hx)
 	// Wisps exist only in SQLite and are shared via .beads/redirect, not JSONL.
+	// Uses IsEffectivelyEphemeral() to catch wisps even if the Ephemeral flag was not set.
 	filtered := make([]*types.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if !issue.Ephemeral {
+		if !issue.IsEffectivelyEphemeral() {
 			filtered = append(filtered, issue)
 		}
 	}

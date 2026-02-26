@@ -752,19 +752,20 @@ func fetchAndMergeIssues(ctx context.Context, s storage.Storage, dirtyIDs []stri
 }
 
 // filterWisps removes ephemeral (wisp) issues from the map and returns a slice.
-// Wisps should never be exported to JSONL.
+// Ephemeral issues (wisps, molecules, agents, gates, convoys) should never be exported to JSONL.
+// Uses IsEffectivelyEphemeral() to catch issues even if the Ephemeral flag was not set (bd-9hx).
 func filterWisps(issueMap map[string]*types.Issue) []*types.Issue {
 	issues := make([]*types.Issue, 0, len(issueMap))
 	wispsSkipped := 0
 	for _, issue := range issueMap {
-		if issue.Ephemeral {
+		if issue.IsEffectivelyEphemeral() {
 			wispsSkipped++
 			continue
 		}
 		issues = append(issues, issue)
 	}
 	if wispsSkipped > 0 {
-		debug.Logf("auto-flush: filtered %d wisps from export", wispsSkipped)
+		debug.Logf("auto-flush: filtered %d ephemeral issues from export", wispsSkipped)
 	}
 	return issues
 }
