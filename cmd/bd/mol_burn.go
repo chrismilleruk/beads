@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
-	"github.com/steveyegge/beads/internal/utils"
 )
 
 var molBurnCmd = &cobra.Command{
@@ -79,27 +78,29 @@ func runMolBurn(cmd *cobra.Command, args []string) {
 
 // burnSingleMolecule handles the single molecule case (original behavior)
 func burnSingleMolecule(ctx context.Context, moleculeID string, dryRun, force bool) {
-	// Resolve molecule ID in main store
-	resolvedID, err := utils.ResolvePartialID(ctx, store, moleculeID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error resolving molecule ID %s: %v\n", moleculeID, err)
+	// Resolve molecule ID with routing support (matches bd show behavior)
+	routedResult, err := resolveAndGetIssueWithRouting(ctx, store, moleculeID)
+	if routedResult != nil {
+		defer routedResult.Close()
+	}
+	if err != nil || routedResult == nil {
+		errMsg := "not found"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		fmt.Fprintf(os.Stderr, "Error resolving molecule ID %s: %s\n", moleculeID, errMsg)
 		os.Exit(1)
 	}
-
-	// Load the molecule
-	rootIssue, err := store.GetIssue(ctx, resolvedID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading molecule: %v\n", err)
-		os.Exit(1)
-	}
+	resolvedID := routedResult.ResolvedID
+	effectiveStore := routedResult.Store
 
 	// Branch based on molecule phase
-	if rootIssue.Ephemeral {
+	if routedResult.Issue.Ephemeral {
 		// Wisp: direct delete without tombstones
-		burnWispMolecule(ctx, resolvedID, dryRun, force)
+		burnWispMolecule(ctx, effectiveStore, resolvedID, dryRun, force)
 	} else {
 		// Mol: cascade delete with tombstones
-		burnPersistentMolecule(ctx, resolvedID, dryRun, force)
+		burnPersistentMolecule(ctx, effectiveStore, resolvedID, dryRun, force)
 	}
 }
 
@@ -109,27 +110,30 @@ func burnMultipleMolecules(ctx context.Context, moleculeIDs []string, dryRun, fo
 	var persistentIDs []string
 	var failedResolve []string
 
-	// First pass: resolve and categorize all IDs
+	// First pass: resolve and categorize all IDs (with routing support)
 	for _, moleculeID := range moleculeIDs {
-		resolvedID, err := utils.ResolvePartialID(ctx, store, moleculeID)
-		if err != nil {
+		routedResult, err := resolveAndGetIssueWithRouting(ctx, store, moleculeID)
+		if err != nil || routedResult == nil {
 			if !jsonOutput {
-				fmt.Fprintf(os.Stderr, "Warning: failed to resolve %s: %v\n", moleculeID, err)
+				errMsg := "not found"
+				if err != nil {
+					errMsg = err.Error()
+				}
+				fmt.Fprintf(os.Stderr, "Warning: failed to resolve %s: %s\n", moleculeID, errMsg)
+			}
+			if routedResult != nil {
+				routedResult.Close()
 			}
 			failedResolve = append(failedResolve, moleculeID)
 			continue
 		}
+		// Close routed storage - we only needed to resolve the ID and check the type.
+		// Batch operations will re-resolve if needed (wisps are typically local).
+		resolvedID := routedResult.ResolvedID
+		isEphemeral := routedResult.Issue.Ephemeral
+		routedResult.Close()
 
-		issue, err := store.GetIssue(ctx, resolvedID)
-		if err != nil {
-			if !jsonOutput {
-				fmt.Fprintf(os.Stderr, "Warning: failed to load %s: %v\n", resolvedID, err)
-			}
-			failedResolve = append(failedResolve, moleculeID)
-			continue
-		}
-
-		if issue.Ephemeral {
+		if isEphemeral {
 			wispIDs = append(wispIDs, resolvedID)
 		} else {
 			persistentIDs = append(persistentIDs, resolvedID)
@@ -243,9 +247,9 @@ func burnMultipleMolecules(ctx context.Context, moleculeIDs []string, dryRun, fo
 }
 
 // burnWispMolecule handles wisp deletion (no tombstones, ephemeral-only)
-func burnWispMolecule(ctx context.Context, resolvedID string, dryRun, force bool) {
+func burnWispMolecule(ctx context.Context, s storage.Storage, resolvedID string, dryRun, force bool) {
 	// Load the molecule subgraph
-	subgraph, err := loadTemplateSubgraph(ctx, store, resolvedID)
+	subgraph, err := loadTemplateSubgraph(ctx, s, resolvedID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading wisp molecule: %v\n", err)
 		os.Exit(1)
@@ -306,7 +310,7 @@ func burnWispMolecule(ctx context.Context, resolvedID string, dryRun, force bool
 	}
 
 	// Perform the burn
-	result, err := burnWisps(ctx, store, wispIDs)
+	result, err := burnWisps(ctx, s, wispIDs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error burning wisp: %v\n", err)
 		os.Exit(1)
@@ -327,9 +331,9 @@ func burnWispMolecule(ctx context.Context, resolvedID string, dryRun, force bool
 }
 
 // burnPersistentMolecule handles mol deletion (with tombstones, cascade delete)
-func burnPersistentMolecule(ctx context.Context, resolvedID string, dryRun, force bool) {
+func burnPersistentMolecule(ctx context.Context, s storage.Storage, resolvedID string, dryRun, force bool) {
 	// Load the molecule subgraph to show what will be deleted
-	subgraph, err := loadTemplateSubgraph(ctx, store, resolvedID)
+	subgraph, err := loadTemplateSubgraph(ctx, s, resolvedID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading molecule: %v\n", err)
 		os.Exit(1)

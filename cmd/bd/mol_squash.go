@@ -11,7 +11,6 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
-	"github.com/steveyegge/beads/internal/utils"
 )
 
 var molSquashCmd = &cobra.Command{
@@ -76,15 +75,24 @@ func runMolSquash(cmd *cobra.Command, args []string) {
 	keepChildren, _ := cmd.Flags().GetBool("keep-children")
 	summary, _ := cmd.Flags().GetString("summary")
 
-	// Resolve molecule ID in main store
-	moleculeID, err := utils.ResolvePartialID(ctx, store, args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error resolving molecule ID %s: %v\n", args[0], err)
+	// Resolve molecule ID with routing support (matches bd show behavior)
+	routedResult, err := resolveAndGetIssueWithRouting(ctx, store, args[0])
+	if routedResult != nil {
+		defer routedResult.Close()
+	}
+	if err != nil || routedResult == nil {
+		errMsg := "not found"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		fmt.Fprintf(os.Stderr, "Error resolving molecule ID %s: %s\n", args[0], errMsg)
 		os.Exit(1)
 	}
+	moleculeID := routedResult.ResolvedID
+	effectiveStore := routedResult.Store
 
-	// Load the molecule subgraph from main store
-	subgraph, err := loadTemplateSubgraph(ctx, store, moleculeID)
+	// Load the molecule subgraph from the store where the issue was found
+	subgraph, err := loadTemplateSubgraph(ctx, effectiveStore, moleculeID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading molecule: %v\n", err)
 		os.Exit(1)
@@ -138,7 +146,7 @@ func runMolSquash(cmd *cobra.Command, args []string) {
 	}
 
 	// Perform the squash
-	result, err := squashMolecule(ctx, store, subgraph.Root, wispChildren, keepChildren, summary, actor)
+	result, err := squashMolecule(ctx, effectiveStore, subgraph.Root, wispChildren, keepChildren, summary, actor)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error squashing molecule: %v\n", err)
 		os.Exit(1)
