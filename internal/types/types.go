@@ -567,8 +567,22 @@ var EphemeralByDefaultTypes = map[IssueType]bool{
 // IsEphemeralByDefault returns true if this issue type should be marked
 // Ephemeral=true by default. These are internal/operational types that
 // shouldn't be synced to Linear or exported to JSONL.
+// Case-insensitive: "Wisp", "MOLECULE", etc. all match.
 func (t IssueType) IsEphemeralByDefault() bool {
-	return EphemeralByDefaultTypes[t]
+	return EphemeralByDefaultTypes[IssueType(strings.ToLower(string(t)))]
+}
+
+// IsEffectivelyEphemeral returns true if this issue should be treated as ephemeral,
+// whether or not the Ephemeral field is explicitly set. This is the belt-and-suspenders
+// check that catches issues whose Ephemeral flag was not set at creation time (e.g.,
+// wisps created before auto-marking was added).
+//
+// Use this method instead of checking issue.Ephemeral directly when deciding whether
+// to include an issue in exports, syncs, or other external-facing operations.
+func (issue *Issue) IsEffectivelyEphemeral() bool {
+	return issue.Ephemeral ||
+		issue.IssueType.IsEphemeralByDefault() ||
+		strings.Contains(issue.ID, "-wisp-")
 }
 
 // Normalize maps issue type aliases to their canonical form.

@@ -1302,6 +1302,72 @@ func TestDoPushToLinearIncludeEphemeralFlag(t *testing.T) {
 	}
 }
 
+// TestDoPushToLinearEffectivelyEphemeral verifies that issues are excluded from Linear push
+// when they're effectively ephemeral (by ID pattern) even if the Ephemeral flag
+// is not set. This is the regression test for bd-9hx.
+func TestDoPushToLinearEffectivelyEphemeral(t *testing.T) {
+	testStore, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := testStore.SetConfig(ctx, "linear.api_key", "test-api-key"); err != nil {
+		t.Fatalf("SetConfig linear.api_key failed: %v", err)
+	}
+	if err := testStore.SetConfig(ctx, "linear.team_id", "12345678-1234-1234-1234-123456789abc"); err != nil {
+		t.Fatalf("SetConfig linear.team_id failed: %v", err)
+	}
+
+	now := time.Now()
+
+	// Regular task - should be pushed
+	task := &types.Issue{
+		Title:     "Regular task",
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Status:    types.StatusOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Ephemeral: false,
+	}
+	if err := testStore.CreateIssue(ctx, task, "test-actor"); err != nil {
+		t.Fatalf("CreateIssue task failed: %v", err)
+	}
+
+	// Wisp by ID pattern but Ephemeral=false and type=task
+	// (simulates a wisp created before auto-marking was added, or whose type wasn't set)
+	wispByID := &types.Issue{
+		ID:        "bd-wisp-leaked1",
+		Title:     "Wisp by ID pattern only",
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Status:    types.StatusOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Ephemeral: false, // Not set - this is the regression case
+	}
+	if err := testStore.CreateIssue(ctx, wispByID, "test-actor"); err != nil {
+		t.Fatalf("CreateIssue wispByID failed: %v", err)
+	}
+
+	origStore := store
+	origActor := actor
+	store = testStore
+	actor = "test-actor"
+	t.Cleanup(func() {
+		store = origStore
+		actor = origActor
+	})
+
+	// Default (includeEphemeral=false): only the regular task should be pushed
+	stats, err := doPushToLinear(ctx, true, false, false, nil, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("doPushToLinear failed: %v", err)
+	}
+	if stats.Created != 1 {
+		t.Errorf("expected Created=1 (only regular task), got %d — effectively ephemeral issues leaked through", stats.Created)
+	}
+}
+
 // TestDoPushToLinearClosedBeadsNotCreated ensures closed beads with no external_ref
 // are never added to the "to create" list, so they are not pushed to Linear (e.g. after
 // --fix has cleared ref and closed beads whose Linear issue was deleted).

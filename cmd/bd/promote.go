@@ -70,7 +70,7 @@ Examples:
 			if err := json.Unmarshal(showResp.Data, &issue); err != nil {
 				FatalErrorRespectJSON("decoding issue: %v", err)
 			}
-			if !issue.Ephemeral {
+			if !issue.IsEffectivelyEphemeral() {
 				FatalErrorRespectJSON("%s is not a wisp (already persistent)", id)
 			}
 
@@ -128,7 +128,7 @@ Examples:
 		if issue == nil {
 			FatalErrorRespectJSON("issue %s not found", fullID)
 		}
-		if !issue.Ephemeral {
+		if !issue.IsEffectivelyEphemeral() {
 			FatalErrorRespectJSON("%s is not a wisp (already persistent)", fullID)
 		}
 
