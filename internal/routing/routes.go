@@ -212,17 +212,21 @@ func ResolveToExternalRef(id, beadsDir string) string {
 		return ""
 	}
 
-	prefix := ExtractPrefix(id)
-	if prefix == "" {
-		return ""
+	// Match the longest route prefix against the ID (bd-7c22u).
+	// This correctly handles multi-segment prefixes like "bd-wisp-".
+	var bestRoute *Route
+	for i := range routes {
+		if strings.HasPrefix(id, routes[i].Prefix) {
+			if bestRoute == nil || len(routes[i].Prefix) > len(bestRoute.Prefix) {
+				bestRoute = &routes[i]
+			}
+		}
 	}
 
-	for _, route := range routes {
-		if route.Prefix == prefix {
-			project := ExtractProjectFromPath(route.Path)
-			if project != "" {
-				return fmt.Sprintf("external:%s:%s", project, id)
-			}
+	if bestRoute != nil {
+		project := ExtractProjectFromPath(bestRoute.Path)
+		if project != "" {
+			return fmt.Sprintf("external:%s:%s", project, id)
 		}
 	}
 
@@ -247,34 +251,41 @@ func ResolveBeadsDirForID(ctx context.Context, id, currentBeadsDir string) (stri
 	// First try local, then walk up to find town-level routes
 	routes, townRoot := findTownRoutes(currentBeadsDir)
 	if len(routes) > 0 {
-		prefix := ExtractPrefix(id)
-		if prefix != "" {
-			for _, route := range routes {
-				if route.Prefix == prefix {
-					// Found a matching route - resolve the path
-					var targetPath string
-					if route.Path == "." {
-						// Special case: "." means the town beads directory
-						targetPath = filepath.Join(townRoot, ".beads")
-					} else {
-						// Normal path resolution relative to town root
-						targetPath = filepath.Join(townRoot, route.Path, ".beads")
-					}
-
-					// Follow redirect if present
-					targetPath = resolveRedirect(targetPath)
-
-					// Verify the target exists
-					if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
-						// Debug logging
-						if os.Getenv("BD_DEBUG_ROUTING") != "" {
-							fmt.Fprintf(os.Stderr, "[routing] ID %s matched prefix %s -> %s (townRoot=%s)\n", id, prefix, targetPath, townRoot)
-						}
-						return targetPath, true, nil
-					} else if os.Getenv("BD_DEBUG_ROUTING") != "" {
-						fmt.Fprintf(os.Stderr, "[routing] ID %s matched prefix %s but target %s not found: %v\n", id, prefix, targetPath, err)
-					}
+		// Match the longest route prefix against the ID (bd-7c22u).
+		// This correctly handles multi-segment prefixes like "hq-cv-" and "bd-wisp-"
+		// which ExtractPrefix (first-hyphen only) would mis-route.
+		var bestRoute *Route
+		for i := range routes {
+			if strings.HasPrefix(id, routes[i].Prefix) {
+				if bestRoute == nil || len(routes[i].Prefix) > len(bestRoute.Prefix) {
+					bestRoute = &routes[i]
 				}
+			}
+		}
+
+		if bestRoute != nil {
+			// Found a matching route - resolve the path
+			var targetPath string
+			if bestRoute.Path == "." {
+				// Special case: "." means the town beads directory
+				targetPath = filepath.Join(townRoot, ".beads")
+			} else {
+				// Normal path resolution relative to town root
+				targetPath = filepath.Join(townRoot, bestRoute.Path, ".beads")
+			}
+
+			// Follow redirect if present
+			targetPath = resolveRedirect(targetPath)
+
+			// Verify the target exists
+			if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
+				// Debug logging
+				if os.Getenv("BD_DEBUG_ROUTING") != "" {
+					fmt.Fprintf(os.Stderr, "[routing] ID %s matched prefix %s -> %s (townRoot=%s)\n", id, bestRoute.Prefix, targetPath, townRoot)
+				}
+				return targetPath, true, nil
+			} else if os.Getenv("BD_DEBUG_ROUTING") != "" {
+				fmt.Fprintf(os.Stderr, "[routing] ID %s matched prefix %s but target %s not found: %v\n", id, bestRoute.Prefix, targetPath, err)
 			}
 		}
 	}

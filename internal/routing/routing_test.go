@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -309,6 +310,101 @@ func TestDetectUserRole_NoRemoteMaintainer(t *testing.T) {
 	}
 	if role != Maintainer {
 		t.Fatalf("expected %s for local project with no remote, got %s", Maintainer, role)
+	}
+}
+
+// TestResolveBeadsDirForID_LongestPrefixMatch verifies that ResolveBeadsDirForID
+// matches the longest route prefix (bd-7c22u). This ensures multi-segment prefixes
+// like "hq-cv-" are preferred over shorter matches like "hq-" when both exist.
+func TestResolveBeadsDirForID_LongestPrefixMatch(t *testing.T) {
+	// Create temp directory structure:
+	// tmpDir/
+	//   mayor/town.json
+	//   .beads/routes.jsonl
+	//   hq-general/.beads/      <- "hq-" route
+	//   hq-special/.beads/      <- "hq-cv-" route
+	tmpDir, err := os.MkdirTemp("", "routing-longest-prefix-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create town root marker
+	if err := os.MkdirAll(filepath.Join(tmpDir, "mayor"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "mayor", "town.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create beads dirs
+	hqGeneral := filepath.Join(tmpDir, "hq-general", ".beads")
+	hqSpecial := filepath.Join(tmpDir, "hq-special", ".beads")
+	localBeads := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(hqGeneral, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(hqSpecial, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(localBeads, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write routes.jsonl
+	routesContent := `{"prefix":"hq-","path":"hq-general"}
+{"prefix":"hq-cv-","path":"hq-special"}
+`
+	if err := os.WriteFile(filepath.Join(localBeads, "routes.jsonl"), []byte(routesContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(tmpDir)
+
+	tests := []struct {
+		name    string
+		id      string
+		wantDir string
+		wantOk  bool
+	}{
+		{
+			name:    "short prefix matches hq-",
+			id:      "hq-abc123",
+			wantDir: hqGeneral,
+			wantOk:  true,
+		},
+		{
+			name:    "long prefix matches hq-cv- (not hq-)",
+			id:      "hq-cv-xyz789",
+			wantDir: hqSpecial,
+			wantOk:  true,
+		},
+		{
+			name:    "no matching route falls through",
+			id:      "zz-unknown",
+			wantDir: localBeads,
+			wantOk:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDir, gotRouted, err := ResolveBeadsDirForID(context.Background(), tt.id, localBeads)
+			if err != nil {
+				t.Fatalf("ResolveBeadsDirForID(%q) error: %v", tt.id, err)
+			}
+			if gotDir != tt.wantDir {
+				t.Errorf("ResolveBeadsDirForID(%q) dir = %q, want %q", tt.id, gotDir, tt.wantDir)
+			}
+			if gotRouted != tt.wantOk {
+				t.Errorf("ResolveBeadsDirForID(%q) routed = %v, want %v", tt.id, gotRouted, tt.wantOk)
+			}
+		})
 	}
 }
 

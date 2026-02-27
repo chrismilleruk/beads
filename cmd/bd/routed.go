@@ -65,14 +65,13 @@ func resolveAndGetIssueWithRouting(ctx context.Context, localStore storage.Stora
 	if routedStorage != nil {
 		// Step 2: Resolve and get from routed store
 		result, err := resolveAndGetFromStore(ctx, routedStorage.Storage, id, true)
-		if err != nil {
-			_ = routedStorage.Close()
-			return nil, err
-		}
-		if result != nil {
+		if err == nil && result != nil {
 			result.closeFn = func() { _ = routedStorage.Close() }
 			return result, nil
 		}
+		// Routed store didn't find the issue — fall through to local store.
+		// This handles multi-prefix IDs (e.g. bd-wisp-wisp-*) where routing
+		// may send the ID to the wrong database (bd-7c22u).
 		_ = routedStorage.Close()
 	}
 

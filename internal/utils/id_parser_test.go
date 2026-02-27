@@ -652,6 +652,83 @@ func TestResolvePartialID_CrossPrefix(t *testing.T) {
 	}
 }
 
+// TestResolvePartialID_WispDoublePrefix tests resolution of wisp IDs that have
+// a double-prefix pattern like "bd-wisp-wisp-djq5" (bd-7c22u). The fast path
+// (exact ID match via SearchIssues) should find these directly.
+func TestResolvePartialID_WispDoublePrefix(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New("")
+
+	// Create wisp-style issues with multi-segment prefixes
+	wispIssue := &types.Issue{
+		ID:        "bd-wisp-wisp-djq5",
+		Title:     "Wisp patrol step",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+		Ephemeral: true,
+	}
+	molIssue := &types.Issue{
+		ID:        "bd-mol-abc12",
+		Title:     "Molecule step",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+	}
+	wispStep := &types.Issue{
+		ID:        "bd-wisp-ah52",
+		Title:     "Wisp step (single wisp prefix)",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+		Ephemeral: true,
+	}
+
+	for _, issue := range []*types.Issue{wispIssue, molIssue, wispStep} {
+		if err := store.CreateIssue(ctx, issue, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.SetConfig(ctx, "issue_prefix", "bd"); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "double-prefix wisp ID - exact match",
+			input:    "bd-wisp-wisp-djq5",
+			expected: "bd-wisp-wisp-djq5",
+		},
+		{
+			name:     "single wisp prefix - exact match",
+			input:    "bd-wisp-ah52",
+			expected: "bd-wisp-ah52",
+		},
+		{
+			name:     "mol prefix - exact match",
+			input:    "bd-mol-abc12",
+			expected: "bd-mol-abc12",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ResolvePartialID(ctx, store, tt.input)
+			if err != nil {
+				t.Errorf("ResolvePartialID(%q) unexpected error: %v", tt.input, err)
+			}
+			if result != tt.expected {
+				t.Errorf("ResolvePartialID(%q) = %q; want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestLooksLikePrefixedID tests the helper function for detecting prefixed IDs
 func TestLooksLikePrefixedID(t *testing.T) {
 	tests := []struct {
